@@ -17,6 +17,19 @@ from session_migrate.model import AgentFormat, Event, EventKind, Provenance, Rol
 
 PINNED_CODEX_VERSION = "0.144.4"
 
+# Codex writes one of these in session_meta.history_mode. "legacy" is the
+# original single-file layout; "paginated" was introduced during 0.147 and is
+# what every later release writes. Both place the conversation items this
+# adapter reads at the same top level, so the same parse applies: `paginated`
+# additionally emits `item_completed` wrappers around items that are already
+# present as their own records, plus `token_usage_record` accounting. Neither is
+# a source of model-visible content, so ignoring them loses nothing.
+#
+# `history_base` is a genuinely different matter and stays a hard error below:
+# it means the session is a fork whose earlier turns live in another file, and
+# resolving that lineage is not implemented.
+SUPPORTED_HISTORY_MODES = frozenset({"legacy", "paginated"})
+
 
 def parse(path: Path) -> Session:
     records = list(iter_jsonl(path))
@@ -43,9 +56,10 @@ def parse(path: Path) -> Session:
         if record_type == "session_meta":
             if not canonical_meta_seen:
                 history_mode = string(payload.get("history_mode"))
-                if history_mode and history_mode != "legacy":
+                if history_mode and history_mode not in SUPPORTED_HISTORY_MODES:
                     raise SessionMigrateError(
-                        f"Codex history mode {history_mode!r} is not supported; expected legacy"
+                        f"Codex history mode {history_mode!r} is not supported; "
+                        f"expected one of {', '.join(sorted(SUPPORTED_HISTORY_MODES))}"
                     )
                 if payload.get("history_base") is not None:
                     raise SessionMigrateError("Codex history_base lineage is not supported")

@@ -902,7 +902,7 @@ def test_load_session_rejects_source_change_during_parse(
         load_session(path, AgentFormat.CLAUDE)
 
 
-def test_rejects_paginated_and_expands_replacement_history(tmp_path: Path) -> None:
+def test_rejects_unknown_history_mode_and_expands_replacement_history(tmp_path: Path) -> None:
     base_meta = {
         "timestamp": "2026-08-17T12:00:00Z",
         "type": "session_meta",
@@ -914,11 +914,14 @@ def test_rejects_paginated_and_expands_replacement_history(tmp_path: Path) -> No
             "model_provider": "openai",
         },
     }
-    paginated = json.loads(json.dumps(base_meta))
-    paginated["payload"]["history_mode"] = "paginated"
-    paginated_path = write_jsonl(tmp_path / "paginated.jsonl", [paginated])
+    # "paginated" is the layout Codex 0.147+ writes and is now accepted; see
+    # tests/test_codex_paginated_history_mode.py for the equivalence evidence.
+    # An unrecognized mode must still fail closed.
+    future = json.loads(json.dumps(base_meta))
+    future["payload"]["history_mode"] = "some-future-mode"
+    future_path = write_jsonl(tmp_path / "future-mode.jsonl", [future])
     with pytest.raises(SessionMigrateError, match="history mode"):
-        codex.parse(paginated_path)
+        codex.parse(future_path)
 
     replacement_path = write_jsonl(
         tmp_path / "replacement.jsonl",
