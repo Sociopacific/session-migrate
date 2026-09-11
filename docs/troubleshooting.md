@@ -261,12 +261,14 @@ separately authenticated Devin installation; session-migrate never copies
 credentials. See the [Hermes](hermes-format.md),
 [MastraCode](mastracode-format.md), and [Devin](devin-format.md) format notes.
 
-## Codex paginated or history-base source
+## Codex paginated source is rejected
 
-These lineage modes are recognized but unsupported. `--format codex` cannot
-bypass the guard. The safe root-paginated subset still needs ordinal,
-contextual-user, compaction/rollback/inter-agent, and lineage semantics before
-it can be enabled.
+A complete root paginated rollout is supported when every record has an integer
+ordinal contiguous from zero. Missing/gapped ordinals are treated as corrupt.
+`history_base` and `subagent_history_start_ordinal` mean the file depends on an
+external or projected prefix and remain unsupported; `--format codex` cannot
+bypass either guard. Resume or export the root session instead of flattening
+the dependent file by hand.
 
 ## Claude sidechain/subagent
 

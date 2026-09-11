@@ -177,9 +177,11 @@ This keeps refresh work proportional to the small inventory table, not the
 total transcript corpus.
 
 Consequently, archived sessions, duplicate UUIDs, nested sidechains/subagents,
-malformed files, and absent Copilot/Cursor native stores remain discoverable. Claude
-sidechains and Codex paginated/history-base sessions are listed as
-`unsupported`; listing them does not make them convertible.
+malformed files, and absent Copilot/Cursor native stores remain discoverable.
+Complete root Codex paginated rollouts are candidates. Claude sidechains,
+Codex `history_base` lineage, and paginated subagent projections are listed as
+`unsupported`; listing them does not make them convertible. A paginated root
+with missing or non-contiguous ordinals is `corrupt`.
 
 ## Quick start
 
@@ -320,7 +322,7 @@ registered roots.
 | --- | --- |
 | `candidate` | Fast structural metadata scan passed; full conversion has not been requested. OpenCode and Kilo rows remain candidates until their one-session official export is parsed. |
 | `validated` | The exact stat identity was fully parsed, dry-converted, and target-validated during `refresh --validate`. |
-| `unsupported` | The file is a recognized session type intentionally rejected by conversion, such as a Claude sidechain or Codex paginated/history-base rollout. |
+| `unsupported` | The file is a recognized session type intentionally rejected by conversion, such as a Claude sidechain, Codex `history_base` lineage, or a Codex paginated subagent projection. |
 | `corrupt` | JSONL, SQLite/protobuf, native structure, or explicit conversion validation failed. |
 | `oversized` | The source exceeds the migrator's bounded input limits. |
 | `busy` | The source changed while it was being scanned; retry after the native CLI finishes appending. |

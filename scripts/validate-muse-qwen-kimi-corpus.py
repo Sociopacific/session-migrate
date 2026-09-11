@@ -178,6 +178,12 @@ def expected_rejection(source_format: AgentFormat, exc: SessionMigrateError) -> 
         return "codex_history_mode"
     if "history_base lineage is not supported" in message:
         return "codex_history_base"
+    if "subagent history projection is not supported" in message:
+        return "codex_subagent_history"
+    if "conflicting history modes" in message:
+        return "codex_history_mode_conflict"
+    if "paginated" in message and "ordinal" in message:
+        return "codex_paginated_ordinals"
     return None
 
 

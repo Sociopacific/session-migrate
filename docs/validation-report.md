@@ -1292,11 +1292,33 @@ is committed. Default CI performs the frozen parser and 324 conversion cases
 without network access or model spend; live gates remain explicit release
 commands.
 
+### 2026-09-11 Codex paginated-source review
+
+The root paginated reader was checked against the official Codex 0.153.4
+protocol, rollout persistence policy, and ordinal implementation. A
+content-free structural audit over nine recent root rollouts found 81 canonical
+user items, 244 canonical assistant items, 21 provider-only user-shaped
+messages, and 53 provider developer messages. Only counts and content hashes
+were compared; private values were never printed or added to fixtures.
+
+The regression fixture now uses real `event_msg.item_completed` nesting,
+canonical `UserMessage`/`AgentMessage` shapes, integer ordinals, and the current
+token-usage envelope. Its provider stream deliberately contains an unmatched
+context message. Tests prove that canonical text and image history matches the
+legacy portable projection, the context sentinel is never replayed, damaged
+ordinals fail closed, and external/history-projection metadata remains
+unsupported. Catalog tests independently pin candidate, corrupt, and
+unsupported classification. All nine audited native roots were parsed and
+converted through each of the eighteen target byte validators: 162/162 local,
+content-safe conversions passed without writing artifacts or invoking a model.
+
 ## Known boundaries
 
-- Codex paginated history and `history_base` lineage remain fail-closed until
-  their effective-history and fork semantics can be reproduced and native
-  tested without relying on derived SQLite state.
+- Complete root Codex paginated history is supported from canonical completed
+  TurnItems after strict ordinal validation. `history_base` lineage and
+  paginated subagent projections remain fail-closed until their external or
+  projected prefix semantics can be reproduced without relying on derived
+  SQLite state.
 - Provider-encrypted Codex replacement-history state cannot be translated to
   Claude. The migrator retains visible expanded history and reports the semantic
   difference.

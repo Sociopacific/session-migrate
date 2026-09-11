@@ -275,13 +275,24 @@ ordered `response_item` envelopes. Text messages use `type: "message"` with
 `function_call_output`; call arguments are a JSON-encoded string, and both
 records share `call_id`.
 
-`response_item` is the canonical, model-visible history. `event_msg` records
-drive list preview and UI display. The writer emits both for text messages so
-the text is visible to the resumed model and to the interface. The reader
-deduplicates UI messages against response-item messages. It uses UI events as a
-legacy fallback when a rollout has no canonical messages. In a mixed partial
-rollout, exact normalized duplicates are removed; unmatched UI projections are
-retained as marked messages and reported in the manifest.
+For legacy history, `response_item` is the canonical, model-visible history and
+`event_msg` records drive list preview and UI display. The writer emits both
+for text messages so the text is visible to the resumed model and to the
+interface. The reader deduplicates UI messages against response-item messages.
+It uses UI events as a legacy fallback when a rollout has no canonical
+messages. In a mixed partial legacy rollout, exact normalized duplicates are
+removed; unmatched UI projections are retained as marked messages and
+reported in the manifest.
+
+Codex 0.147+ root paginated rollouts use a different authority: completed
+`UserMessage` and `AgentMessage` TurnItems inside
+`event_msg.item_completed`. The reader requires an integer ordinal on every
+record, contiguous from zero. It ignores provider `response_item` messages as
+conversation because those records can include synthetic environment and
+developer context; non-message response items still supply portable tool and
+reasoning data. Direct image/audio user inputs are retained when represented
+by the canonical TurnItem. Local media paths and other TurnItem blocks remain
+explicit opaque losses.
 
 Current legacy rollouts can contain `compacted.replacement_history`. Codex
 installs that array as the effective history at the checkpoint and replays only
@@ -294,21 +305,22 @@ post-compaction context transfer. The paired `event_msg.context_compacted` UI
 notification is deduplicated against the checkpoint.
 
 Other observed envelopes include `compacted`, `turn_context`, `world_state`,
-reasoning response items, inter-agent communication, and newer paginated or
-fork-related state. Those records are not all portable conversation history.
+reasoning response items, inter-agent communication, and fork-related state.
+Those records are not all portable conversation history.
 
 ## Route support
 
 Every ordered pair among the eighteen formats is implemented, for 324 routes:
 
-- full portable adapters: Claude, Codex legacy, Pi, OMP, OpenCode, Copilot,
+- full portable adapters: Claude, Codex legacy and root paginated, Pi, OMP, OpenCode, Copilot,
   Antigravity, Vibe, Muse, Qwen, Kimi, Grok, Kilo, OpenHands, Hermes,
   MastraCode, and Devin;
 - experimental text-only adapter: Cursor.
 
 Same-format routes are portable rewrites into new sessions, not byte copies.
-Codex paginated/history-base sources remain fail-closed. Cursor is experimental,
-build-pinned, and deliberately transfers only ordered user/assistant text. The
+Codex `history_base` lineage and paginated subagent projections remain
+fail-closed. Cursor is experimental, build-pinned, and deliberately transfers
+only ordered user/assistant text. The
 detailed table below explains the original Claude/Codex pair; target-specific
 behavior is documented in [Additional native formats](additional-target-formats.md)
 and [Muse/Qwen/Kimi](muse-qwen-kimi-formats.md). Grok, Kilo, and OpenHands
@@ -348,7 +360,8 @@ Legend:
 | Inactive Claude branches | **Unsupported** | N/A | They become opaque events and are counted as dropped; no forks are created. |
 | Claude sidechains/subagents | **Unsupported** | N/A | The catalog indexes nested sidechains as unsupported, but direct lookup/conversion does not import them; transfer the parent session. |
 | Codex legacy linear history | N/A | **Supported** | Ordered response items become one linear Claude UUID graph. |
-| Codex paginated history/forks | N/A | **Unsupported** | Non-legacy `history_mode` and `history_base` are rejected rather than risking an incomplete import. Replacement-history compaction uses the expanded-transcript policy above. |
+| Codex root paginated history | N/A | **Supported** | Contiguous canonical completed TurnItems supply user/assistant turns; provider-context messages are not replayed. Replacement-history compaction uses the expanded-transcript policy above. |
+| Codex paginated forks/subagents | N/A | **Unsupported** | `history_base` and `subagent_history_start_ordinal` require external or projected history and are rejected rather than silently truncating or duplicating a conversation. |
 | Codex UI-only messages | N/A | **Lossy fallback** | Used as the conversation when no response-item messages exist. In a mixed partial file, exact normalized duplicates are removed and unmatched projections are retained with `message:ui_only_projection`; fuzzy matching is never used. |
 | Turn context, policies, world state, snapshots | **Unsupported** | **Unsupported** | Codex `turn_context` is counted as context; `world_state` and `security_risk_score` become counted opaque events. Shell snapshots, approvals, external credential stores, MCP state, memories, goals, and configuration are outside transcript conversion. |
 | Unknown source records/blocks | **Unsupported** | **Unsupported** | They become content-free opaque/sentinel events where recognized and are counted at write time, including unknown nested tool-result blocks. |

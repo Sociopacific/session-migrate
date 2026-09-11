@@ -30,7 +30,8 @@ creates a new independent target session; it does not move/delete the source,
 clone runtime state byte-for-byte, synchronize future turns, or re-execute
 historical tools.
 
-Codex paginated/history-base lineage and Claude sidechain import remain
+Complete root Codex paginated rollouts are transferable. Codex `history_base`
+lineage, paginated subagent projections, and Claude sidechain import remain
 non-transferable. They are discoverable in the catalog and fail closed.
 
 ## Functional requirements

@@ -47,8 +47,11 @@ replaced, or truncated file fails with a retryable error.
 
 - Claude reconstructs the active UUID ancestry selected by `last-prompt`,
   validates compaction back-edges, and excludes inactive branches/meta prompts.
-- Codex replays canonical legacy `response_item` history, deduplicates UI
-  projections, and rejects paginated/history-base lineage.
+- Codex replays canonical legacy `response_item` history. For a complete root
+  paginated rollout it validates contiguous ordinals and takes visible turns
+  only from `event_msg.item_completed` TurnItems, never from contextual
+  provider messages. External `history_base` and subagent projections remain
+  fail-closed.
 - Pi follows the v3 `id`/`parentId` active tree and rejects unsupported schema
   versions.
 - OMP follows its v3 active tree after validating the fixed 256-byte title

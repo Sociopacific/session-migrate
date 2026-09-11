@@ -25,6 +25,7 @@ from session_migrate.conversion import ConversionOptions, convert_session, load_
 from session_migrate.errors import JsonlError, SessionMigrateError
 from session_migrate.formats import (
     antigravity,
+    codex,
     devin,
     hermes,
     kimi,
@@ -2077,6 +2078,10 @@ def _scan_file(path: Path, agent_format: AgentFormat, root: Path) -> _Scan:
     cli_version = None
     history_mode = None
     history_base = False
+    codex_subagent_history = False
+    codex_ordinals_complete = True
+    codex_history_mode_conflict = False
+    codex_selected_history_mode = None
     sidechain = False
     records = 0
     has_conversation = False
@@ -2114,6 +2119,12 @@ def _scan_file(path: Path, agent_format: AgentFormat, root: Path) -> _Scan:
                     if title:
                         labels.append(_Label("ai_title", title, record.index, 90))
             elif agent_format == AgentFormat.CODEX:
+                ordinal = value.get("ordinal")
+                codex_ordinals_complete = codex_ordinals_complete and (
+                    isinstance(ordinal, int)
+                    and not isinstance(ordinal, bool)
+                    and ordinal == records - 1
+                )
                 if record_type in {"user", "assistant"} and isinstance(value.get("message"), dict):
                     wrong_format = True
                 payload = value.get("payload")
@@ -2131,8 +2142,21 @@ def _scan_file(path: Path, agent_format: AgentFormat, root: Path) -> _Scan:
                         or _string(value.get("timestamp"))
                     )
                     cli_version = cli_version or _string(payload.get("cli_version"))
-                    history_mode = history_mode or _string(payload.get("history_mode"))
+                    raw_history_mode = _string(payload.get("history_mode"))
+                    observed_history_mode = raw_history_mode or "legacy"
+                    codex_history_mode_conflict = codex_history_mode_conflict or (
+                        codex_selected_history_mode is not None
+                        and observed_history_mode != codex_selected_history_mode
+                    )
+                    codex_selected_history_mode = (
+                        codex_selected_history_mode or observed_history_mode
+                    )
+                    history_mode = history_mode or raw_history_mode
                     history_base = history_base or payload.get("history_base") is not None
+                    codex_subagent_history = (
+                        codex_subagent_history
+                        or payload.get("subagent_history_start_ordinal") is not None
+                    )
                 elif record_type == "response_item":
                     has_conversation = has_conversation or payload.get("type") in {
                         "message",
@@ -2141,13 +2165,20 @@ def _scan_file(path: Path, agent_format: AgentFormat, root: Path) -> _Scan:
                         "function_call_output",
                         "custom_tool_call_output",
                     }
-                elif record_type == "event_msg" and payload.get("type") == "thread_name_updated":
-                    title = _bounded(
-                        _string(payload.get("name")) or _string(payload.get("thread_name")),
-                        LABEL_LIMIT,
-                    )
-                    if title:
-                        labels.append(_Label("thread_name", title, record.index, 110))
+                elif record_type == "event_msg":
+                    if payload.get("type") == "item_completed":
+                        item = payload.get("item")
+                        has_conversation = has_conversation or (
+                            isinstance(item, dict)
+                            and item.get("type") in {"UserMessage", "AgentMessage"}
+                        )
+                    elif payload.get("type") == "thread_name_updated":
+                        title = _bounded(
+                            _string(payload.get("name")) or _string(payload.get("thread_name")),
+                            LABEL_LIMIT,
+                        )
+                        if title:
+                            labels.append(_Label("thread_name", title, record.index, 110))
             elif agent_format in {AgentFormat.PI, AgentFormat.OMP}:
                 if record_type in {"user", "assistant", "session_meta", "response_item"}:
                     wrong_format = True
@@ -2264,10 +2295,21 @@ def _scan_file(path: Path, agent_format: AgentFormat, root: Path) -> _Scan:
     elif agent_format == AgentFormat.CODEX:
         if not has_session_meta:
             status, reason = "corrupt", "missing_session_meta"
-        elif history_mode and history_mode != "legacy":
-            status, reason = "unsupported", "codex_history_mode"
         elif history_base:
             status, reason = "unsupported", "codex_history_base"
+        elif codex_subagent_history:
+            status, reason = "unsupported", "codex_subagent_history"
+        elif codex_history_mode_conflict:
+            status, reason = "corrupt", "codex_history_mode_conflict"
+        elif (
+            codex_selected_history_mode
+            and codex_selected_history_mode not in codex.SUPPORTED_HISTORY_MODES
+        ):
+            status, reason = "unsupported", "codex_history_mode"
+        elif codex_selected_history_mode == "paginated" and first_record_type != "session_meta":
+            status, reason = "corrupt", "missing_session_meta"
+        elif codex_selected_history_mode == "paginated" and not codex_ordinals_complete:
+            status, reason = "corrupt", "codex_paginated_ordinals"
         elif not has_conversation:
             status, reason = "corrupt", "no_conversation_records"
     elif agent_format == AgentFormat.PI:

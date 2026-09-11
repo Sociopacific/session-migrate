@@ -533,8 +533,8 @@ in [Mistral Vibe session format](vibe-format.md).
 - Repeat authenticated semantic recall when a supported target/provider version changes.
 - Add native fixtures for remote-URL images, branching, and schema drift when
   sanitized examples can be generated safely.
-- Implement Codex paginated/history-base lineage only after ordinal, contextual
-  user, compaction, rollback, and inter-agent semantics are independently gated.
+- Implement Codex `history_base` and paginated subagent projection only after
+  external-prefix, rollback, and inter-agent semantics are independently gated.
 - Re-run the pinned integration suite for every supported agent version/schema
   combination.
 
@@ -717,3 +717,35 @@ indexes bounded native titles/IDs without bodies, and represents selection as
 validates its install bundle, for 324 ordered routes. Detailed contracts are in
 [Hermes](hermes-format.md), [MastraCode](mastracode-format.md), and
 [Devin](devin-format.md).
+
+## 2026-09-11: Codex 0.153 root paginated history
+
+PR #4 was reviewed against the official Codex `rust-v0.153.4` source rather
+than its original synthetic assumption. `rollout/src/policy.rs` shows that
+paginated history persists canonical `TurnItem`s as
+`event_msg.item_completed`; legacy user/assistant UI events are deliberately
+not persisted in that mode. `rollout/src/ordinal.rs` requires paginated
+records to carry a monotonic ordinal, and `protocol/src/protocol.rs` defines
+`history_base` as an external exclusive prefix and
+`subagent_history_start_ordinal` as the boundary between inherited context and
+the subagent's own projection.
+
+A content-free audit then examined 172 recent native paginated rollouts without
+`history_base`: nine roots and 163 subagent projections. It inspected only
+record/item types, structural fields, counts, and hashed content equality; no
+message, tool, media, ID, or path value was printed or committed. Across the
+nine roots, 75 canonical user items matched provider user messages and all 242
+provider assistant messages matched canonical assistant items. The provider
+stream also contained 21 additional user-shaped messages and 53 developer
+messages that had no canonical completed turn. Replaying every
+`response_item.message`, as the initial PR did, would therefore turn internal
+context into visible user history.
+
+The corrected reader makes completed `UserMessage`/`AgentMessage` TurnItems the
+only paginated source of conversation turns, retains non-message response items
+for portable tool/reasoning data, and records ignored provider messages as
+opaque losses. It accepts only self-contained roots with integer ordinals
+contiguous from zero. `history_base`, subagent projections, unknown modes, and
+damaged ordinal streams fail closed. The sanitized 0.153.4 fixture mirrors the
+official nested item shape and includes an unmatched contextual provider
+message as a regression sentinel.
