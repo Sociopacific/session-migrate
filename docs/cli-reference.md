@@ -1,6 +1,6 @@
 # CLI reference
 
-This page documents `session-migrate` 0.10.0. `smigrate` is an exact shorthand
+This page documents `session-migrate` 0.11.0. `smigrate` is an exact shorthand
 for the same executable.
 
 ## Commands
