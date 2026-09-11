@@ -6,6 +6,24 @@ here. Native format compatibility is documented separately in
 
 ## Unreleased
 
+## 0.11.0 - 2026-09-11
+
+- Read root Codex rollouts written with `history_mode: "paginated"` by using
+  canonical completed user and agent turn items while keeping provider
+  envelopes out of the portable transcript.
+- Reject paginated history bases, subagent projections, mixed or conflicting
+  history modes, unknown modes, and non-contiguous ordinals instead of
+  guessing at a resumable conversation.
+- Add a sanitized real-structure Codex 0.153.4 paginated fixture and regressions
+  across all 18 target writers, including checks that synthetic provider
+  context cannot leak into migrated sessions.
+- Promote the 18-harness native corpus to the default release gate: every
+  native source is parsed and checked across all 324 ordered routes, with
+  pinned credential-free client continuations and explicit modality evidence.
+- Harden corpus capture and sanitization for Claude Code, Codex, Pi, Oh My Pi,
+  OpenCode, Copilot, Antigravity, Cursor, Mistral Vibe, Muse, Qwen Code, Kimi
+  Code, Grok, Kilo Code, OpenHands, Hermes Agent, MastraCode, and Devin CLI.
+
 ## 0.10.0 - 2026-08-31
 
 - Add Hermes Agent 0.20.6, MastraCode 0.37.1, and Devin CLI 3000.6.7 as

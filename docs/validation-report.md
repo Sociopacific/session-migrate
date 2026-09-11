@@ -1312,6 +1312,23 @@ unsupported classification. All nine audited native roots were parsed and
 converted through each of the eighteen target byte validators: 162/162 local,
 content-safe conversions passed without writing artifacts or invoking a model.
 
+### v0.11.0 release gates
+
+The clean 2026-09-11 release candidate passed Ruff lint and formatting, all
+**1,523 default tests**, and the wheel/source build. The 51 reported skips are
+the documented opt-in live-account or separately installed exact-binary gates;
+the default corpus oracle still executed all **324/324 ordered routes**. Twine
+accepted both distribution metadata files, and a fresh isolated Python 3.11
+environment installed the wheel without an index. Both installed entry points
+reported version 0.11.0.
+
+The website passed ESLint, its production build, and the rendered-page test;
+an audit limited to shipped production dependencies reported zero
+vulnerabilities. A tracked-tree scan found no credential patterns, private
+home paths, or account identifiers. The preceding merged code tree passed all
+22 GitHub Actions jobs on Python 3.11/3.12/3.13, the website, and every pinned
+native client before the release metadata was prepared.
+
 ## Known boundaries
 
 - Complete root Codex paginated history is supported from canonical completed
