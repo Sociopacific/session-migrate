@@ -17,22 +17,20 @@ from session_migrate.model import AgentFormat, Event, EventKind, Provenance, Rol
 
 PINNED_CODEX_VERSION = "0.144.4"
 
-# Codex writes one of these in session_meta.history_mode. "legacy" is the
-# original single-file layout; "paginated" was introduced during 0.147 and is
-# what every later release writes. Both place the conversation items this
-# adapter reads at the same top level, so the same parse applies: `paginated`
-# additionally emits `item_completed` wrappers around items that are already
-# present as their own records, plus `token_usage_record` accounting. Neither is
-# a source of model-visible content, so ignoring them loses nothing.
-#
-# `history_base` is a genuinely different matter and stays a hard error below:
-# it means the session is a fork whose earlier turns live in another file, and
-# resolving that lineage is not implemented.
+# Codex 0.147+ paginated rollouts persist canonical TurnItems in
+# event_msg/item_completed records. Provider response_item messages are not an
+# equivalent transcript: they also contain synthetic environment and developer
+# context. Paginated parsing therefore takes user/assistant messages only from
+# the canonical completed items while retaining non-message response items for
+# tool and reasoning data.
 SUPPORTED_HISTORY_MODES = frozenset({"legacy", "paginated"})
 
 
 def parse(path: Path) -> Session:
     records = list(iter_jsonl(path))
+    history_mode = _history_mode(records)
+    if history_mode == "paginated":
+        _validate_paginated_root(records)
     events: list[Event] = []
     fallback_events: list[Event] = []
     context_compacted_events: list[Event] = []
@@ -45,7 +43,6 @@ def parse(path: Path) -> Session:
     response_message_count = 0
     response_messages: Counter[tuple[Role | None, str]] = Counter()
     title = None
-    canonical_meta_seen = False
 
     for record in records:
         value = record.value
@@ -54,16 +51,6 @@ def parse(path: Path) -> Session:
         payload = object_value(value.get("payload"))
         provenance = Provenance(record.index, record_type)
         if record_type == "session_meta":
-            if not canonical_meta_seen:
-                history_mode = string(payload.get("history_mode"))
-                if history_mode and history_mode not in SUPPORTED_HISTORY_MODES:
-                    raise SessionMigrateError(
-                        f"Codex history mode {history_mode!r} is not supported; "
-                        f"expected one of {', '.join(sorted(SUPPORTED_HISTORY_MODES))}"
-                    )
-                if payload.get("history_base") is not None:
-                    raise SessionMigrateError("Codex history_base lineage is not supported")
-                canonical_meta_seen = True
             session_id = (
                 session_id or string(payload.get("id")) or string(payload.get("session_id"))
             )
@@ -74,7 +61,23 @@ def parse(path: Path) -> Session:
             model_provider = model_provider or string(payload.get("model_provider"))
             continue
         if record_type == "response_item":
-            parsed = _response_item_events(payload, timestamp, provenance)
+            if history_mode == "paginated" and string(payload.get("type")) in {
+                "message",
+                "agent_message",
+            }:
+                parsed = [
+                    Event(
+                        kind=EventKind.OPAQUE,
+                        timestamp=timestamp,
+                        payload={
+                            "source_item_type": string(payload.get("type")) or "<missing>",
+                            "reason": "paginated_provider_message",
+                        },
+                        provenance=provenance,
+                    )
+                ]
+            else:
+                parsed = _response_item_events(payload, timestamp, provenance)
             events.extend(parsed)
             response_message_count += sum(
                 event.kind == EventKind.MESSAGE and event.role in {Role.USER, Role.ASSISTANT}
@@ -89,7 +92,9 @@ def parse(path: Path) -> Session:
             )
         elif record_type == "event_msg":
             event_type = string(payload.get("type"))
-            if event_type == "user_message":
+            if event_type == "item_completed" and history_mode == "paginated":
+                events.extend(_paginated_completed_item_events(payload, timestamp, provenance))
+            elif event_type == "user_message" and history_mode == "legacy":
                 fallback_events.append(
                     Event(
                         kind=EventKind.MESSAGE,
@@ -99,7 +104,7 @@ def parse(path: Path) -> Session:
                         provenance=provenance,
                     )
                 )
-            elif event_type == "agent_message":
+            elif event_type == "agent_message" and history_mode == "legacy":
                 fallback_events.append(
                     Event(
                         kind=EventKind.MESSAGE,
@@ -181,7 +186,9 @@ def parse(path: Path) -> Session:
                 )
             )
 
-    if response_message_count == 0:
+    if history_mode == "paginated":
+        events.sort(key=lambda event: event.provenance.record_index)
+    elif response_message_count == 0:
         events.extend(event for event in fallback_events if event.text)
         events.sort(key=lambda event: event.provenance.record_index)
     else:
@@ -217,6 +224,191 @@ def parse(path: Path) -> Session:
         events=tuple(events),
         raw_record_count=len(records),
         model_provider=model_provider,
+    )
+
+
+def _history_mode(records: list[Any]) -> str:
+    selected_mode = "legacy"
+    metadata_seen = False
+    for record in records:
+        if string(record.value.get("type")) != "session_meta":
+            continue
+        payload = object_value(record.value.get("payload"))
+        history_mode = string(payload.get("history_mode")) or "legacy"
+        if history_mode not in SUPPORTED_HISTORY_MODES:
+            raise SessionMigrateError(
+                f"Codex history mode {history_mode!r} is not supported; "
+                f"expected one of {', '.join(sorted(SUPPORTED_HISTORY_MODES))}"
+            )
+        if payload.get("history_base") is not None:
+            raise SessionMigrateError("Codex history_base lineage is not supported")
+        if payload.get("subagent_history_start_ordinal") is not None:
+            raise SessionMigrateError(
+                "Codex paginated subagent history projection is not supported"
+            )
+        if metadata_seen and history_mode != selected_mode:
+            raise SessionMigrateError("Codex session metadata has conflicting history modes")
+        selected_mode = history_mode
+        metadata_seen = True
+    if selected_mode == "paginated" and (
+        not records or string(records[0].value.get("type")) != "session_meta"
+    ):
+        raise SessionMigrateError("Codex paginated history must start with session metadata")
+    return selected_mode
+
+
+def _validate_paginated_root(records: list[Any]) -> None:
+    """Fail closed if a root rollout is not a complete canonical ordinal stream."""
+
+    for expected, record in enumerate(records):
+        ordinal = record.value.get("ordinal")
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int):
+            raise SessionMigrateError(
+                f"Codex paginated record {record.index} is missing an integer ordinal"
+            )
+        if ordinal != expected:
+            raise SessionMigrateError(
+                "Codex paginated ordinals must be contiguous from zero; "
+                f"record {record.index} has ordinal {ordinal}, expected {expected}"
+            )
+
+
+def _paginated_completed_item_events(
+    payload: dict[str, Any],
+    timestamp: str | None,
+    provenance: Provenance,
+) -> list[Event]:
+    item = object_value(payload.get("item"))
+    item_type = string(item.get("type"))
+    if item_type == "UserMessage":
+        return _paginated_user_message_events(item, timestamp, provenance)
+    if item_type == "AgentMessage":
+        content = item.get("content")
+        if not isinstance(content, list):
+            return [_opaque_completed_item(item_type, timestamp, provenance, "invalid_content")]
+        result: list[Event] = []
+        for block_index, block in enumerate(content):
+            block_provenance = Provenance(
+                provenance.record_index,
+                provenance.record_type,
+                block_index=block_index,
+            )
+            if not isinstance(block, dict):
+                result.append(
+                    _opaque_completed_item(item_type, timestamp, block_provenance, "invalid_block")
+                )
+                continue
+            block_type = string(block.get("type"))
+            text_value = string(block.get("text"))
+            if block_type in {"Text", "text"} and text_value:
+                result.append(
+                    Event(
+                        kind=EventKind.MESSAGE,
+                        role=Role.ASSISTANT,
+                        text=text_value,
+                        timestamp=timestamp,
+                        provenance=block_provenance,
+                    )
+                )
+            else:
+                result.append(
+                    _opaque_completed_item(
+                        item_type,
+                        timestamp,
+                        block_provenance,
+                        f"unsupported_block:{block_type or '<missing>'}",
+                    )
+                )
+        return result
+    return [_opaque_completed_item(item_type, timestamp, provenance)]
+
+
+def _paginated_user_message_events(
+    item: dict[str, Any],
+    timestamp: str | None,
+    provenance: Provenance,
+) -> list[Event]:
+    content = item.get("content")
+    if not isinstance(content, list):
+        return [_opaque_completed_item("UserMessage", timestamp, provenance, "invalid_content")]
+    result: list[Event] = []
+    for block_index, block in enumerate(content):
+        block_provenance = Provenance(
+            provenance.record_index,
+            provenance.record_type,
+            block_index=block_index,
+        )
+        if not isinstance(block, dict):
+            result.append(
+                _opaque_completed_item("UserMessage", timestamp, block_provenance, "invalid_block")
+            )
+            continue
+        block_type = string(block.get("type"))
+        if block_type == "text":
+            text_value = string(block.get("text"))
+            if text_value:
+                result.append(
+                    Event(
+                        kind=EventKind.MESSAGE,
+                        role=Role.USER,
+                        text=text_value,
+                        timestamp=timestamp,
+                        provenance=block_provenance,
+                    )
+                )
+        elif block_type == "image":
+            result.append(
+                Event(
+                    kind=EventKind.CONTEXT,
+                    role=Role.USER,
+                    timestamp=timestamp,
+                    payload={
+                        "block_type": "image",
+                        "image_url": string(block.get("image_url")),
+                    },
+                    provenance=block_provenance,
+                )
+            )
+        elif block_type == "audio":
+            result.append(
+                Event(
+                    kind=EventKind.CONTEXT,
+                    role=Role.USER,
+                    timestamp=timestamp,
+                    payload={
+                        "block_type": "audio",
+                        "audio_url": string(block.get("audio_url")),
+                    },
+                    provenance=block_provenance,
+                )
+            )
+        else:
+            result.append(
+                _opaque_completed_item(
+                    "UserMessage",
+                    timestamp,
+                    block_provenance,
+                    f"unsupported_block:{block_type or '<missing>'}",
+                )
+            )
+    return result
+
+
+def _opaque_completed_item(
+    item_type: str | None,
+    timestamp: str | None,
+    provenance: Provenance,
+    reason: str | None = None,
+) -> Event:
+    return Event(
+        kind=EventKind.OPAQUE,
+        timestamp=timestamp,
+        payload={
+            "source_event_type": "item_completed",
+            "source_item_type": item_type or "<missing>",
+            **({"reason": reason} if reason else {}),
+        },
+        provenance=provenance,
     )
 
 

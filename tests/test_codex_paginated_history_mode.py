@@ -1,86 +1,151 @@
-"""Codex 0.147+ writes history_mode="paginated"; earlier releases wrote "legacy".
+"""Codex 0.147+ root paginated-history compatibility and safety tests."""
 
-The paginated layout keeps the model-visible items this adapter reads at the same
-top level. It adds `item_completed` wrappers around items that are already
-emitted as their own records, plus `token_usage_record` accounting — neither
-carries model-visible content. These tests pin that equivalence so the adapter
-cannot start depending on the wrappers, and pin that a forked session
-(`history_base`) is still refused rather than silently truncated.
-"""
-
+import json
 from pathlib import Path
 
 import pytest
 
+from session_migrate.conversion import ConversionOptions, convert_session
 from session_migrate.errors import SessionMigrateError
 from session_migrate.formats import codex
+from session_migrate.model import EventKind, Role, TargetFormat
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LEGACY = FIXTURES / "codex-0.144.4" / "basic.jsonl"
 PAGINATED = FIXTURES / "codex-0.153.4" / "paginated.jsonl"
 
 
-def _visible(session):
-    """Role/text pairs a target format receives, excluding inert records.
+def _portable(session):
+    return [
+        (
+            event.kind,
+            event.role,
+            event.text,
+            event.tool_name,
+            event.tool_call_id,
+            event.payload.get("block_type"),
+            event.payload.get("image_url"),
+            event.payload.get("content_blocks"),
+        )
+        for event in session.events
+        if event.kind != EventKind.OPAQUE
+    ]
 
-    Paginated sessions carry `item_completed` and `token_usage_record` entries
-    that the adapter keeps as OPAQUE events — preserved for provenance, never
-    rendered into a target transcript. They are excluded here so this compares
-    the conversation itself.
-    """
-    return [(event.role, event.text) for event in session.events if event.role is not None]
+
+def _rewrite_fixture(tmp_path: Path, mutate) -> Path:
+    records = [json.loads(line) for line in PAGINATED.read_text().splitlines()]
+    mutate(records)
+    path = tmp_path / "paginated.jsonl"
+    path.write_text("".join(json.dumps(record) + "\n" for record in records))
+    return path
 
 
-def test_paginated_history_mode_parses():
+def test_paginated_uses_canonical_completed_items_and_matches_legacy() -> None:
     session = codex.parse(PAGINATED)
+
     assert session.cli_version == "0.153.4"
-    assert session.events, "paginated session produced no events"
+    assert _portable(session) == _portable(codex.parse(LEGACY))
+    assert "INTERNAL ENVIRONMENT CONTEXT" not in " ".join(
+        event.text or "" for event in session.events
+    )
+    assert [
+        (event.role, event.text) for event in session.events if event.kind == EventKind.MESSAGE
+    ] == [
+        (Role.USER, "Remember synthetic migrator nonce BETA-2048."),
+        (Role.ASSISTANT, "I will remember the synthetic nonce."),
+        (Role.USER, "Continue after the synthetic compaction."),
+        (Role.ASSISTANT, "The synthetic post-compaction fixture is complete."),
+    ]
 
 
-def test_paginated_matches_legacy_conversation():
-    """The added wrappers must not change, duplicate, or drop visible turns."""
-    assert _visible(codex.parse(PAGINATED)) == _visible(codex.parse(LEGACY))
-
-
-def test_paginated_extra_records_stay_opaque():
-    """`item_completed` duplicates items already parsed; it must not become a turn.
-
-    This is the real hazard in accepting the paginated layout: `item_completed`
-    wraps items that are ALSO emitted as their own `response_item` records, so
-    interpreting both would double every assistant message.
-    """
+def test_paginated_provider_messages_and_accounting_stay_opaque() -> None:
     session = codex.parse(PAGINATED)
-    extra = [event for event in session.events if event.role is None]
-    assert extra, "expected the paginated-only records to be retained"
-    assert {event.payload.get("source_record_type") for event in extra} == {
-        "item_completed",
-        "token_usage_record",
-    }
-    assert all(event.kind.value == "opaque" for event in extra)
+    opaque = [event for event in session.events if event.kind == EventKind.OPAQUE]
+
+    assert sum(event.payload.get("reason") == "paginated_provider_message" for event in opaque) == 5
+    assert (
+        sum(event.payload.get("source_record_type") == "token_usage_record" for event in opaque)
+        == 1
+    )
 
 
-def test_unknown_history_mode_still_refused(tmp_path):
-    """An unrecognized mode must fail closed, not be parsed hopefully."""
-    lines = PAGINATED.read_text().splitlines()
-    lines[0] = lines[0].replace('"paginated"', '"some-future-mode"')
-    path = tmp_path / "future.jsonl"
-    path.write_text("\n".join(lines) + "\n")
+@pytest.mark.parametrize("target_format", tuple(TargetFormat))
+def test_paginated_context_cannot_leak_to_any_target(
+    tmp_path: Path, target_format: TargetFormat
+) -> None:
+    artifact = convert_session(
+        codex.parse(PAGINATED),
+        ConversionOptions(
+            target_format=target_format,
+            session_id="50000000-0000-4000-8000-000000000001",
+            cwd=tmp_path,
+        ),
+    )
+
+    assert artifact.native_bytes
+    assert b"INTERNAL ENVIRONMENT CONTEXT" not in artifact.native_bytes
+
+
+@pytest.mark.parametrize("ordinal", [None, True, "3", 99])
+def test_paginated_invalid_or_noncontiguous_ordinals_fail_closed(
+    tmp_path: Path, ordinal: object
+) -> None:
+    def mutate(records):
+        if ordinal is None:
+            records[3].pop("ordinal")
+        else:
+            records[3]["ordinal"] = ordinal
+
+    path = _rewrite_fixture(tmp_path, mutate)
+    with pytest.raises(SessionMigrateError, match="ordinal"):
+        codex.parse(path)
+
+
+def test_unknown_history_mode_still_refused(tmp_path: Path) -> None:
+    def mutate(records):
+        records[0]["payload"]["history_mode"] = "some-future-mode"
+
+    path = _rewrite_fixture(tmp_path, mutate)
     with pytest.raises(SessionMigrateError, match="history mode"):
         codex.parse(path)
 
 
-def test_history_base_still_refused(tmp_path):
-    """A fork's earlier turns live in another file; refusing beats truncating."""
-    import json
+def test_history_base_still_refused(tmp_path: Path) -> None:
+    def mutate(records):
+        records[0]["payload"]["history_base"] = {
+            "thread_id": "10000000-0000-4000-8000-000000000000",
+            "end_ordinal_exclusive": 12,
+            "end_byte_offset": 1024,
+        }
 
-    lines = PAGINATED.read_text().splitlines()
-    meta = json.loads(lines[0])
-    meta["payload"]["history_base"] = {
-        "thread_id": "10000000-0000-4000-8000-000000000000",
-        "end_ordinal_exclusive": 12,
-    }
-    lines[0] = json.dumps(meta)
-    path = tmp_path / "forked.jsonl"
-    path.write_text("\n".join(lines) + "\n")
+    path = _rewrite_fixture(tmp_path, mutate)
     with pytest.raises(SessionMigrateError, match="history_base"):
         codex.parse(path)
+
+
+def test_paginated_subagent_projection_still_refused(tmp_path: Path) -> None:
+    def mutate(records):
+        records[0]["payload"]["subagent_history_start_ordinal"] = 8
+
+    path = _rewrite_fixture(tmp_path, mutate)
+    with pytest.raises(SessionMigrateError, match="subagent history projection"):
+        codex.parse(path)
+
+
+def test_paginated_metadata_must_be_first_and_consistent(tmp_path: Path) -> None:
+    def move_meta(records):
+        records[0], records[1] = records[1], records[0]
+        records[0]["ordinal"], records[1]["ordinal"] = 0, 1
+
+    with pytest.raises(SessionMigrateError, match="start with session metadata"):
+        codex.parse(_rewrite_fixture(tmp_path, move_meta))
+
+    def duplicate_conflicting_meta(records):
+        duplicate = json.loads(json.dumps(records[0]))
+        duplicate["payload"]["history_mode"] = "legacy"
+        records.append(duplicate)
+        for ordinal, record in enumerate(records):
+            record["ordinal"] = ordinal
+
+    with pytest.raises(SessionMigrateError, match="conflicting history modes"):
+        codex.parse(_rewrite_fixture(tmp_path, duplicate_conflicting_meta))

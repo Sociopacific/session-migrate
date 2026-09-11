@@ -106,6 +106,24 @@ def _codex_records(
                 },
             }
         )
+    if history_mode == "paginated":
+        records[0]["payload"]["cli_version"] = "0.153.4"  # type: ignore[index]
+        records.append(
+            {
+                "timestamp": "2026-08-18T13:00:03Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "item_completed",
+                    "item": {
+                        "type": "UserMessage",
+                        "id": "10000000-0000-4000-8000-000000000001",
+                        "content": [{"type": "text", "text": "not indexed", "text_elements": []}],
+                    },
+                },
+            }
+        )
+        for ordinal, record in enumerate(records):
+            record["ordinal"] = ordinal
     return records
 
 
@@ -336,7 +354,7 @@ def test_codex_active_archive_paginated_and_native_titles(tmp_path: Path) -> Non
 
     with _catalog(tmp_path) as catalog:
         result = catalog.refresh(codex_roots=(home,), include_auto=False)
-        assert result.statuses == {"candidate": 2, "unsupported": 1}
+        assert result.statuses == {"candidate": 3}
         event_name = catalog.list_sessions(query="rollout event")
         assert len(event_name) == 1
         assert event_name[0].title_kind == "thread_name"
@@ -348,10 +366,10 @@ def test_codex_active_archive_paginated_and_native_titles(tmp_path: Path) -> Non
         assert catalog.list_sessions(query="forbidden preview") == []
         assert catalog.list_sessions(query="forbidden first-message") == []
 
-        unsupported = catalog.list_sessions(statuses=("unsupported",))
-        assert len(unsupported) == 1
-        assert unsupported[0].history_mode == "paginated"
-        assert unsupported[0].reason == "codex_history_mode"
+        paginated_entry = catalog.list_sessions(query=PAGINATED_ID)
+        assert len(paginated_entry) == 1
+        assert paginated_entry[0].history_mode == "paginated"
+        assert paginated_entry[0].status == "candidate"
 
         # A transiently unavailable vendor cache must not erase title metadata
         # already derived from it when the authoritative JSONL changes.
@@ -371,6 +389,58 @@ def test_codex_active_archive_paginated_and_native_titles(tmp_path: Path) -> Non
         retained_name = catalog.list_sessions(query="native saved name")
         assert len(retained_name) == 1
         assert retained_name[0].title == "Native saved name"
+
+
+def test_codex_paginated_catalog_fails_closed_on_incomplete_projections(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "codex"
+    cases = {
+        "40000000-0000-4000-8000-000000000001": ("codex_history_base", "unsupported"),
+        "40000000-0000-4000-8000-000000000002": (
+            "codex_subagent_history",
+            "unsupported",
+        ),
+        "40000000-0000-4000-8000-000000000003": (
+            "codex_paginated_ordinals",
+            "corrupt",
+        ),
+        "40000000-0000-4000-8000-000000000004": ("codex_history_mode", "unsupported"),
+        "40000000-0000-4000-8000-000000000005": (
+            "codex_history_mode_conflict",
+            "corrupt",
+        ),
+    }
+    for session_id, (reason, _) in cases.items():
+        path = home / "sessions" / "2026" / "08" / "18" / f"rollout-synthetic-{session_id}.jsonl"
+        records = _codex_records(session_id, history_mode="paginated")
+        meta = records[0]["payload"]
+        assert isinstance(meta, dict)
+        if reason == "codex_history_base":
+            meta["history_base"] = {
+                "thread_id": CODEX_ID,
+                "end_ordinal_exclusive": 2,
+                "end_byte_offset": 512,
+            }
+        elif reason == "codex_subagent_history":
+            meta["subagent_history_start_ordinal"] = 2
+        elif reason == "codex_paginated_ordinals":
+            records[1]["ordinal"] = 99
+        elif reason == "codex_history_mode":
+            meta["history_mode"] = "future"
+        else:
+            duplicate = json.loads(json.dumps(records[0]))
+            duplicate["payload"]["history_mode"] = "legacy"
+            duplicate["ordinal"] = len(records)
+            records.append(duplicate)
+        _write_jsonl(path, records)
+
+    with _catalog(tmp_path) as catalog:
+        catalog.refresh(codex_roots=(home,), include_auto=False)
+        entries = catalog.list_sessions(statuses=("unsupported", "corrupt"), include_paths=True)
+
+    observed = {entry.session_id: (entry.reason, entry.status) for entry in entries}
+    assert observed == cases
 
 
 def test_refresh_is_incremental_and_validation_is_explicit(tmp_path: Path) -> None:
