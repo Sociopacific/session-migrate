@@ -145,7 +145,8 @@ def parse(path: Path) -> Session:
                 Event(
                     kind=EventKind.COMPACTION,
                     role=Role.SYSTEM,
-                    text=string(payload.get("message")),
+                    text=string(payload.get("message"))
+                    or _replacement_history_summary(replacement_history),
                     timestamp=timestamp,
                     payload={
                         **(
@@ -287,6 +288,38 @@ def catalog_titles(home: Path) -> dict[str, str]:
                 if isinstance(thread_id, str) and isinstance(title, str) and title.strip()
             }
     return {}
+
+
+def _replacement_history_summary(history: Any) -> str | None:
+    """Readable context Codex kept after a server-side (encrypted) compaction.
+
+    Newer Codex compactions carry no summary text: the model continues from an
+    encrypted compaction item plus the user messages listed in
+    ``replacement_history``. Those messages are the readable part of that context.
+    """
+
+    if not isinstance(history, list):
+        return None
+    lines: list[str] = []
+    for item in history:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        role = string(item.get("role"))
+        if role not in {"user", "assistant"}:
+            continue
+        content = item.get("content")
+        blocks = content if isinstance(content, list) else [{"text": content}]
+        for block in blocks:
+            text = string(block.get("text")) if isinstance(block, dict) else None
+            if not text or text.lstrip().startswith("<"):
+                continue
+            lines.append(f"[{role}] {text.strip()}")
+    if not lines:
+        return None
+    return (
+        "Codex compacted this conversation on its server; its summary is encrypted. "
+        "Messages Codex kept in context after the compaction:\n\n" + "\n\n".join(lines)
+    )
 
 
 def _history_mode(records: list[Any], *, history_base_resolved: bool = False) -> str:

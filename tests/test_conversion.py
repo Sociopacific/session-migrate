@@ -965,8 +965,8 @@ def test_rejects_unknown_history_mode_and_expands_replacement_history(tmp_path: 
         session,
         ConversionOptions(target_format=AgentFormat.CLAUDE, cwd=tmp_path),
     )
-    assert artifact.dropped == {"compaction:replacement_history_expanded": 1}
-    assert "visible pre-compaction transcript" in artifact.warnings[0]["message"]
+    assert artifact.dropped == {"compaction:native_boundary": 1}
+    assert "compact boundary" in artifact.warnings[0]["message"]
 
 
 def test_codex_mixed_ui_messages_recover_only_unmatched_fallback(tmp_path: Path) -> None:
@@ -1358,4 +1358,7 @@ def test_codex_fixture_semantics_survive_claude_round_trip(tmp_path: Path) -> No
     converted.write_bytes(artifact.native_bytes)
     reparsed = claude.parse(converted)
 
-    assert semantic_signature(source, omit={EventKind.COMPACTION}) == semantic_signature(reparsed)
+    assert semantic_signature(source, omit={EventKind.COMPACTION}) == semantic_signature(
+        reparsed, omit={EventKind.COMPACTION}
+    )
+    assert any(event.kind == EventKind.COMPACTION for event in reparsed.events)

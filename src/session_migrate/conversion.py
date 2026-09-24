@@ -541,6 +541,11 @@ def convert_session(session: Session, options: ConversionOptions) -> ConversionA
                 "Codex encrypted compaction state cannot be decoded by Claude; "
                 "the visible pre-compaction transcript was retained instead"
             )
+        elif kind == "compaction:native_boundary":
+            message = (
+                "source compaction became a Claude compact boundary with its summary; "
+                "earlier turns stay in the transcript but are not resent to the model"
+            )
         elif kind == "message:ui_only_projection":
             message = (
                 "a Codex UI-only message had no exact canonical response-item match; "

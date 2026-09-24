@@ -244,9 +244,68 @@ def serialize(
         pending_timestamp = None
         pending_source_record = None
 
+    def emit_compaction(event: Event) -> None:
+        # Keep the source's compaction as a native boundary so Claude Code only
+        # sends the summary plus later turns, not the whole pre-compaction log.
+        nonlocal parent_uuid
+        flush()
+        record_timestamp = valid_rfc3339(event.timestamp) or fallback_timestamp
+        common = {
+            "isSidechain": False,
+            "userType": "external",
+            "cwd": str(cwd),
+            "sessionId": session_id,
+            "version": cli_version,
+            "gitBranch": "",
+            "timestamp": record_timestamp,
+        }
+        boundary_uuid = str(uuid.uuid4())
+        emitted.append(
+            {
+                "parentUuid": None,
+                "logicalParentUuid": parent_uuid,
+                **common,
+                "type": "system",
+                "subtype": "compact_boundary",
+                "content": "Conversation compacted",
+                "isMeta": False,
+                "level": "info",
+                "compactMetadata": {"trigger": "auto", "preTokens": 0},
+                "uuid": boundary_uuid,
+            }
+        )
+        summary_uuid = str(uuid.uuid4())
+        emitted.append(
+            {
+                "parentUuid": boundary_uuid,
+                **common,
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": (
+                        "This session is being continued from a previous conversation "
+                        "that ran out of context. The summary below covers the earlier "
+                        "portion of the conversation.\n\n" + str(event.text)
+                    ),
+                },
+                "isVisibleInTranscriptOnly": True,
+                "isCompactSummary": True,
+                "uuid": summary_uuid,
+            }
+        )
+        parent_uuid = summary_uuid
+
     for event in session.events:
         target_role: Role | None = None
         block: dict[str, Any] | None = None
+        if (
+            event.kind == EventKind.COMPACTION
+            and event.text
+            and session.source_format == AgentFormat.CODEX
+        ):
+            emit_compaction(event)
+            dropped["compaction:native_boundary"] += 1
+            continue
         if (
             event.kind == EventKind.MESSAGE
             and event.text

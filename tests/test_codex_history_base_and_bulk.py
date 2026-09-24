@@ -239,3 +239,29 @@ def test_continuation_that_restarts_before_declared_base_end(tmp_path: Path) -> 
     )
 
     assert _messages(codex.parse(continuation)) == _messages(codex.parse(PAGINATED))
+
+
+def test_encrypted_compaction_becomes_claude_boundary_with_kept_messages(tmp_path: Path) -> None:
+    from session_migrate.conversion import ConversionOptions, convert_session
+    from session_migrate.model import TargetFormat
+
+    records = _records()
+    for record in records:
+        if record["type"] == "compacted":
+            record["payload"]["message"] = ""
+            record["payload"]["replacement_history"] = [
+                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Keep BETA-2048"}]},
+                {"type": "compaction", "encrypted_content": "opaque"},
+            ]
+    path = _write(tmp_path / "codex/sessions/2026/09/12/rollout-encrypted.jsonl", records)
+
+    artifact = convert_session(
+        codex.parse(path), ConversionOptions(target_format=TargetFormat.CLAUDE, cwd=tmp_path)
+    )
+    emitted = [json.loads(line) for line in artifact.native_bytes.decode().splitlines()]
+    boundaries = [record for record in emitted if record.get("subtype") == "compact_boundary"]
+    summaries = [record for record in emitted if record.get("isCompactSummary")]
+
+    assert len(boundaries) == 1 and boundaries[0]["parentUuid"] is None
+    assert summaries[0]["parentUuid"] == boundaries[0]["uuid"]
+    assert "Keep BETA-2048" in summaries[0]["message"]["content"]
