@@ -14,9 +14,25 @@ from typing import Any
 
 from session_migrate.errors import JsonlError
 
-DEFAULT_MAX_RECORD_BYTES = 64 * 1024 * 1024
-DEFAULT_MAX_TOTAL_BYTES = 256 * 1024 * 1024
-DEFAULT_MAX_RECORDS = 100_000
+
+def _limit_from_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise JsonlError(f"{name} must be a positive integer") from exc
+    if value <= 0:
+        raise JsonlError(f"{name} must be a positive integer")
+    return value
+
+
+# Safety limits can be raised for very long native sessions (for example Codex
+# threads that grew past 256 MiB) without patching the package.
+DEFAULT_MAX_RECORD_BYTES = _limit_from_env("SESSION_MIGRATE_MAX_RECORD_BYTES", 64 * 1024 * 1024)
+DEFAULT_MAX_TOTAL_BYTES = _limit_from_env("SESSION_MIGRATE_MAX_TOTAL_BYTES", 256 * 1024 * 1024)
+DEFAULT_MAX_RECORDS = _limit_from_env("SESSION_MIGRATE_MAX_RECORDS", 100_000)
 
 
 @dataclass(frozen=True, slots=True)

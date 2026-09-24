@@ -12,7 +12,7 @@ from typing import Any
 
 from session_migrate.errors import SessionMigrateError
 from session_migrate.formats.common import content_text, object_value, string, valid_rfc3339
-from session_migrate.jsonl import encode_jsonl, file_sha256, iter_jsonl
+from session_migrate.jsonl import JsonlRecord, encode_jsonl, file_sha256, iter_jsonl
 from session_migrate.model import AgentFormat, Event, EventKind, Provenance, Role, Session
 
 PINNED_CODEX_VERSION = "0.144.4"
@@ -27,8 +27,8 @@ SUPPORTED_HISTORY_MODES = frozenset({"legacy", "paginated"})
 
 
 def parse(path: Path) -> Session:
-    records = list(iter_jsonl(path))
-    history_mode = _history_mode(records)
+    records, history_base_resolved = _records_with_history_base(path)
+    history_mode = _history_mode(records, history_base_resolved=history_base_resolved)
     if history_mode == "paginated":
         _validate_paginated_root(records)
     events: list[Event] = []
@@ -227,7 +227,7 @@ def parse(path: Path) -> Session:
     )
 
 
-def _history_mode(records: list[Any]) -> str:
+def _history_mode(records: list[Any], *, history_base_resolved: bool = False) -> str:
     selected_mode = "legacy"
     metadata_seen = False
     for record in records:
@@ -240,7 +240,7 @@ def _history_mode(records: list[Any]) -> str:
                 f"Codex history mode {history_mode!r} is not supported; "
                 f"expected one of {', '.join(sorted(SUPPORTED_HISTORY_MODES))}"
             )
-        if payload.get("history_base") is not None:
+        if payload.get("history_base") is not None and not history_base_resolved:
             raise SessionMigrateError("Codex history_base lineage is not supported")
         if payload.get("subagent_history_start_ordinal") is not None:
             raise SessionMigrateError(
@@ -255,6 +255,128 @@ def _history_mode(records: list[Any]) -> str:
     ):
         raise SessionMigrateError("Codex paginated history must start with session metadata")
     return selected_mode
+
+
+def _records_with_history_base(
+    path: Path, *, _visited: frozenset[Path] = frozenset()
+) -> tuple[list[JsonlRecord], bool]:
+    """Read a rollout, prepending its history_base prefix when Codex split the thread.
+
+    Codex continues a long paginated thread in a new rollout file whose
+    session_meta carries ``history_base`` (same thread id plus the exclusive end
+    ordinal of the prefix kept in an earlier file). The earlier file may itself
+    be a continuation, so the lineage is resolved recursively.
+    """
+
+    resolved_path = path.resolve()
+    if resolved_path in _visited:
+        raise SessionMigrateError("Codex history_base lineage contains a cycle")
+    records = list(iter_jsonl(path))
+    base = _history_base(records)
+    if base is None:
+        return records, False
+    thread_id, end_ordinal = base
+    base_path = locate_history_base(resolved_path, thread_id, end_ordinal)
+    base_records, _ = _records_with_history_base(base_path, _visited=_visited | {resolved_path})
+    prefix = [record for record in base_records if _ordinal(record) < end_ordinal]
+    if not prefix or _ordinal(prefix[-1]) != end_ordinal - 1:
+        raise SessionMigrateError(
+            "Codex history_base prefix is incomplete; "
+            f"expected ordinals below {end_ordinal} in the base rollout"
+        )
+    combined = [*prefix, *records]
+    return [
+        JsonlRecord(index=index, line_number=record.line_number, value=record.value)
+        for index, record in enumerate(combined)
+    ], True
+
+
+def _history_base(records: list[JsonlRecord]) -> tuple[str, int] | None:
+    for record in records:
+        if string(record.value.get("type")) != "session_meta":
+            continue
+        base = record.value.get("payload", {}).get("history_base")
+        if base is None:
+            return None
+        if not isinstance(base, dict):
+            raise SessionMigrateError("Codex history_base must be an object")
+        thread_id = string(base.get("thread_id"))
+        end_ordinal = base.get("end_ordinal_exclusive")
+        if (
+            not thread_id
+            or isinstance(end_ordinal, bool)
+            or not isinstance(end_ordinal, int)
+            or end_ordinal <= 0
+        ):
+            raise SessionMigrateError("Codex history_base is missing thread_id or end ordinal")
+        return thread_id, end_ordinal
+    return None
+
+
+def codex_home_for_rollout(path: Path) -> Path | None:
+    for parent in path.parents:
+        if parent.name in {"sessions", "archived_sessions"}:
+            return parent.parent
+    return None
+
+
+def thread_rollouts(home: Path, thread_id: str) -> list[Path]:
+    """Every rollout file of one thread: the original and its continuations."""
+
+    # Continuation files are named ``rollout-<ts>-<root id>_<segment id>.jsonl``
+    # and a later segment may point at an earlier one by its segment id.
+    patterns = (
+        f"rollout-*-{thread_id}.jsonl",
+        f"rollout-*-{thread_id}_*.jsonl",
+        f"rollout-*_{thread_id}.jsonl",
+    )
+    found: list[Path] = []
+    for pattern in patterns:
+        found.extend(home.glob(f"sessions/*/*/*/{pattern}"))
+        found.extend((home / "archived_sessions").glob(pattern))
+    return sorted({candidate.resolve() for candidate in found})
+
+
+def first_ordinal(path: Path) -> int | None:
+    with suppress(OSError, ValueError, StopIteration):
+        with path.open("rb") as stream:
+            value = json.loads(stream.readline())
+        ordinal = value.get("ordinal") if isinstance(value, dict) else None
+        if isinstance(ordinal, int) and not isinstance(ordinal, bool):
+            return ordinal
+    return None
+
+
+def locate_history_base(path: Path, thread_id: str, end_ordinal: int) -> Path:
+    home = codex_home_for_rollout(path)
+    candidates = thread_rollouts(home, thread_id) if home is not None else []
+    if not candidates:
+        candidates = sorted(
+            {
+                *path.parent.glob(f"rollout-*-{thread_id}.jsonl"),
+                *path.parent.glob(f"rollout-*-{thread_id}_*.jsonl"),
+                *path.parent.glob(f"rollout-*_{thread_id}.jsonl"),
+            }
+        )
+    starts = [
+        (start, candidate)
+        for candidate in candidates
+        if candidate.resolve() != path
+        and (start := first_ordinal(candidate)) is not None
+        and start < end_ordinal
+    ]
+    if not starts:
+        raise SessionMigrateError(
+            f"Codex history_base rollout for thread {thread_id} was not found"
+        )
+    return max(starts)[1]
+
+
+def _ordinal(record: JsonlRecord) -> int:
+    ordinal = record.value.get("ordinal")
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int):
+        return -1
+    return ordinal
 
 
 def _validate_paginated_root(records: list[Any]) -> None:

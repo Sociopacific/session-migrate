@@ -12,6 +12,7 @@ from pathlib import Path
 from session_migrate.errors import SessionMigrateError
 from session_migrate.formats import (
     claude,
+    codex,
     cursor,
     devin,
     grok,
@@ -142,9 +143,16 @@ def _claude_matches(home: Path, session_id: str, cwd: Path | None) -> list[Path]
 
 
 def _codex_matches(home: Path, session_id: str) -> list[Path]:
-    active = home.glob(f"sessions/*/*/*/rollout-*-{session_id}.jsonl")
-    archived = (home / "archived_sessions").glob(f"rollout-*-{session_id}.jsonl")
-    return [*active, *archived]
+    rollouts = codex.thread_rollouts(home, session_id)
+    if len(rollouts) <= 1:
+        return rollouts
+    # A long thread is continued in new rollout files whose history_base points
+    # at the earlier one. The continuation with the highest starting ordinal
+    # carries the whole lineage; the parser prepends the earlier prefixes.
+    starts = [(codex.first_ordinal(path), path) for path in rollouts]
+    if any(start is None for start, _ in starts) or len({s for s, _ in starts}) != len(starts):
+        return rollouts
+    return [max(starts)[1]]
 
 
 def _pi_matches(home: Path, session_id: str, cwd: Path | None) -> list[Path]:

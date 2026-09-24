@@ -86,6 +86,22 @@ smigrate catalog search "checkout api" --include-paths
 `catalog refresh` is exhaustive inside the default, environment-selected,
 registered, and explicitly discovered roots. It does not crawl your whole disk.
 
+Import every Codex session into Claude Code at once, each into its own project
+directory:
+
+```bash
+smigrate bulk --from codex --to claude --dry-run
+smigrate bulk --from codex --to claude
+```
+
+`bulk` skips subagent threads (guardian reviews, spawned agents), sessions Codex
+itself imported from another agent, and rollout files that Codex continued in a
+newer file; the newest continuation is imported with its full history. Target
+session IDs are derived from the source thread, so a second run only imports new
+threads. Add `--include-subagents`, `--include-archived`, or `--since YYYY-MM-DD`
+to change the selection. Very long threads may need higher safety limits, for
+example `SESSION_MIGRATE_MAX_TOTAL_BYTES=2147483648 SESSION_MIGRATE_MAX_RECORDS=2000000`.
+
 ## Give it to your coding agent
 
 Choose the route on the [project website](https://session-migrate.github.io/),

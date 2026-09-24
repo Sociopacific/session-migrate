@@ -7,9 +7,11 @@ import json
 import os
 import sys
 from collections.abc import Sequence
+from datetime import date
 from pathlib import Path
 
 from session_migrate import __version__
+from session_migrate.bulk import bulk_codex_to_claude
 from session_migrate.catalog import Catalog, CatalogEntry, default_catalog_path
 from session_migrate.conversion import (
     KILO_HOME_UNSUPPORTED,
@@ -181,6 +183,33 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _add_conversion_arguments(transfer_parser, include_source_format=False)
+
+    bulk_parser = subparsers.add_parser(
+        "bulk", help="import every Codex rollout into Claude Code (skips already imported)"
+    )
+    bulk_parser.add_argument(
+        "--from", dest="source_agent", choices=(AgentFormat.CODEX.value,), required=True
+    )
+    bulk_parser.add_argument("--to", choices=(TargetFormat.CLAUDE.value,), required=True)
+    bulk_parser.add_argument("--source-home", type=_expanded_path, help="source Codex home")
+    bulk_parser.add_argument("--home", type=_expanded_path, help="target Claude home")
+    bulk_parser.add_argument(
+        "--include-subagents",
+        action="store_true",
+        help="also import subagent threads (guardian reviews, spawned agents)",
+    )
+    bulk_parser.add_argument(
+        "--include-archived", action="store_true", help="also import archived_sessions"
+    )
+    bulk_parser.add_argument(
+        "--since", type=date.fromisoformat, help="only sessions started on or after YYYY-MM-DD"
+    )
+    bulk_parser.add_argument(
+        "--dry-run", action="store_true", help="convert and report without installing"
+    )
+    bulk_parser.add_argument(
+        "--full", action="store_true", help="print every migrated session, not only counts"
+    )
 
     catalog_parser = subparsers.add_parser(
         "catalog", help="index, list, and search native sessions across agent homes"
@@ -385,6 +414,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "catalog":
             return _run_catalog(args)
+        if args.command == "bulk":
+            report = bulk_codex_to_claude(
+                source_home=args.source_home or default_target_home(AgentFormat.CODEX),
+                target_home=args.home or default_target_home(TargetFormat.CLAUDE),
+                include_subagents=args.include_subagents,
+                include_archived=args.include_archived,
+                since=args.since,
+                dry_run=args.dry_run,
+            )
+            result = report.to_dict(dry_run=args.dry_run)
+            if not args.full:
+                result.pop("migrated")
+            print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))
+            return 1 if report.failed else 0
         if args.command == "inspect":
             source_format = AgentFormat(args.format) if args.format else None
             result = inspect_session(args.path, source_format=source_format)
