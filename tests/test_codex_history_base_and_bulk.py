@@ -204,3 +204,38 @@ def test_bulk_codex_catalog_selects_sidebar_threads_with_their_titles(tmp_path: 
         (listed, "Sidebar title")
     ]
     assert report.skipped == {"not_in_codex_sidebar": 1}
+
+
+def test_single_ordinal_gap_after_session_meta_is_accepted(tmp_path: Path) -> None:
+    import pytest
+
+    from session_migrate.errors import SessionMigrateError
+
+    records = _records()
+    for record in records[1:]:
+        record["ordinal"] += 1618
+    tail_only = _write(tmp_path / "codex/sessions/2026/09/22/rollout-tail.jsonl", records)
+    assert _messages(codex.parse(tail_only)) == _messages(codex.parse(PAGINATED))
+
+    records[3]["ordinal"] += 5
+    broken = _write(tmp_path / "codex/sessions/2026/09/22/rollout-broken.jsonl", records)
+    with pytest.raises(SessionMigrateError, match="contiguous"):
+        codex.parse(broken)
+
+
+def test_continuation_that_restarts_before_declared_base_end(tmp_path: Path) -> None:
+    records = _records()
+    split = len(records) // 2
+    day = tmp_path / "codex/sessions/2026/09/22"
+    _write(day / f"rollout-2026-09-22T02-40-28-{THREAD_ID}.jsonl", records[: split + 2])
+    meta = json.loads(json.dumps(records[0]))
+    meta["ordinal"] = split
+    meta["payload"]["history_base"] = {"thread_id": THREAD_ID, "end_ordinal_exclusive": split + 2}
+    tail = [json.loads(json.dumps(record)) for record in records[split:]]
+    for record in tail:
+        record["ordinal"] += 1
+    continuation = _write(
+        day / f"rollout-2026-09-22T11-23-07-{THREAD_ID}_{SEGMENT_ID}.jsonl", [meta, *tail]
+    )
+
+    assert _messages(codex.parse(continuation)) == _messages(codex.parse(PAGINATED))

@@ -340,11 +340,16 @@ def _records_with_history_base(
     thread_id, end_ordinal = base
     base_path = locate_history_base(resolved_path, thread_id, end_ordinal)
     base_records, _ = _records_with_history_base(base_path, _visited=_visited | {resolved_path})
-    prefix = [record for record in base_records if _ordinal(record) < end_ordinal]
-    if not prefix or _ordinal(prefix[-1]) != end_ordinal - 1:
+    # A continuation may restart a few ordinals before the declared end of its
+    # base (seen in Codex 0.154 branch segments); its own copy of that overlap
+    # is the one on the visible branch, so the base is cut where it starts.
+    first = _ordinal(records[0]) if records else -1
+    cut = first if 0 < first < end_ordinal else end_ordinal
+    prefix = [record for record in base_records if _ordinal(record) < cut]
+    if not prefix or _ordinal(prefix[-1]) != cut - 1:
         raise SessionMigrateError(
             "Codex history_base prefix is incomplete; "
-            f"expected ordinals below {end_ordinal} in the base rollout"
+            f"expected ordinals below {cut} in the base rollout"
         )
     combined = [*prefix, *records]
     return [
@@ -442,14 +447,24 @@ def _ordinal(record: JsonlRecord) -> int:
 
 
 def _validate_paginated_root(records: list[Any]) -> None:
-    """Fail closed if a root rollout is not a complete canonical ordinal stream."""
+    """Fail closed if a root rollout is not a complete canonical ordinal stream.
 
-    for expected, record in enumerate(records):
+    One gap is accepted: right after the session metadata. Codex writes it when
+    a thread starts from the middle of a history (an external import that keeps
+    only the tail of a long session, or a repaired thread); the rest of the
+    stream must still be contiguous.
+    """
+
+    offset = 0
+    for index, record in enumerate(records):
         ordinal = record.value.get("ordinal")
         if isinstance(ordinal, bool) or not isinstance(ordinal, int):
             raise SessionMigrateError(
                 f"Codex paginated record {record.index} is missing an integer ordinal"
             )
+        if index == 1 and ordinal > 1 and string(records[0].value.get("type")) == "session_meta":
+            offset = ordinal - 1
+        expected = index + offset
         if ordinal != expected:
             raise SessionMigrateError(
                 "Codex paginated ordinals must be contiguous from zero; "
