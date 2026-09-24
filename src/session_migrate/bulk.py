@@ -109,7 +109,14 @@ def bulk_codex_to_claude(
             selected.append(rollout)
 
     thread_counts = Counter(rollout.thread_id for rollout in selected)
+    previously_migrated = _migrated_codex_threads(target_home)
     for rollout in selected:
+        earlier = previously_migrated.get(rollout.thread_id)
+        if earlier is not None and thread_counts[rollout.thread_id] == 1:
+            # Imported before, possibly by `transfer` under a random target ID.
+            report.skipped["already_migrated"] += 1
+            report.already_migrated_ids.append(earlier)
+            continue
         key = (
             rollout.thread_id
             if thread_counts[rollout.thread_id] == 1
@@ -142,6 +149,21 @@ def bulk_codex_to_claude(
             }
         )
     return report
+
+
+def _migrated_codex_threads(target_home: Path) -> dict[str, str]:
+    """Codex thread ID -> Claude session ID from existing session-migrate manifests."""
+
+    migrated: dict[str, str] = {}
+    for manifest in (target_home / "session-migrate" / "manifests").glob("*.json"):
+        with suppress(OSError, ValueError):
+            data = json.loads(manifest.read_text())
+            source = data.get("source") if isinstance(data, dict) else None
+            if isinstance(source, dict) and source.get("format") == AgentFormat.CODEX.value:
+                thread_id = source.get("session_id")
+                if isinstance(thread_id, str) and thread_id:
+                    migrated.setdefault(thread_id, manifest.stem)
+    return migrated
 
 
 def _scan_rollouts(home: Path, *, include_archived: bool) -> list[_Rollout]:
