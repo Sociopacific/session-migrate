@@ -76,6 +76,7 @@ def bulk_codex_to_claude(
     include_archived: bool = False,
     since: date | None = None,
     only_named: bool = False,
+    codex_catalog: bool = False,
     archived_task_cli_state: Path | None = None,
     dry_run: bool = False,
 ) -> BulkReport:
@@ -101,10 +102,13 @@ def bulk_codex_to_claude(
         _archived_task_cli_keys(archived_task_cli_state) if archived_task_cli_state else set()
     )
     external_sources = _external_import_sources(source_home)
+    catalog = set(codex.catalog_titles(source_home)) if codex_catalog else set()
     selected: list[_Rollout] = []
     for rollout in rollouts:
         if rollout.path in superseded:
             report.skipped["continued_in_newer_rollout"] += 1
+        elif codex_catalog and rollout.thread_id not in catalog:
+            report.skipped["not_in_codex_sidebar"] += 1
         elif rollout.external_import and not _import_diverged(
             rollout, external_sources.get(rollout.thread_id)
         ):

@@ -208,6 +208,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--only-named", action="store_true", help="only threads that have a name in Codex"
     )
     bulk_parser.add_argument(
+        "--codex-catalog",
+        action="store_true",
+        help="only threads listed in the Codex Desktop sidebar catalog (sqlite/codex-dev.db)",
+    )
+    bulk_parser.add_argument(
         "--skip-archived-task-cli",
         nargs="?",
         const=Path("~/.task/state.json").expanduser(),
@@ -441,6 +446,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 include_archived=args.include_archived,
                 since=args.since,
                 only_named=args.only_named,
+                codex_catalog=args.codex_catalog,
                 archived_task_cli_state=args.skip_archived_task_cli,
                 dry_run=args.dry_run,
             )

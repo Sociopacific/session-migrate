@@ -177,3 +177,30 @@ def test_bulk_filters_unnamed_and_archived_task_cli_threads(tmp_path: Path) -> N
         "01a07899-0000-7000-8000-00000000000a"
     ]
     assert report.skipped == {"unnamed": 1, "archived_task_cli_environment": 1}
+
+
+def test_bulk_codex_catalog_selects_sidebar_threads_with_their_titles(tmp_path: Path) -> None:
+    import sqlite3
+
+    source = tmp_path / "codex"
+    day = source / "sessions/2026/09/12"
+    listed, hidden = "01a07899-0000-7000-8000-0000000000d1", "01a07899-0000-7000-8000-0000000000d2"
+    for index, thread_id in enumerate((listed, hidden)):
+        records = _records()
+        records[0]["payload"]["id"] = thread_id
+        _write(day / f"rollout-2026-09-12T00-00-0{index}-{thread_id}.jsonl", records)
+    (source / "sqlite").mkdir()
+    catalog = sqlite3.connect(source / "sqlite" / "codex-dev.db")
+    catalog.execute("CREATE TABLE local_thread_catalog (thread_id TEXT, display_title TEXT)")
+    catalog.execute("INSERT INTO local_thread_catalog VALUES (?, ?)", (listed, "Sidebar title"))
+    catalog.commit()
+    catalog.close()
+
+    report = bulk_codex_to_claude(
+        source_home=source, target_home=tmp_path / "claude", codex_catalog=True, dry_run=True
+    )
+
+    assert [(item["source_id"], item["title"]) for item in report.migrated] == [
+        (listed, "Sidebar title")
+    ]
+    assert report.skipped == {"not_in_codex_sidebar": 1}

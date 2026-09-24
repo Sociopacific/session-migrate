@@ -245,7 +245,7 @@ def thread_name(path: Path, thread_id: str) -> str | None:
         ),
     )
     if not databases:
-        return None
+        return catalog_titles(home).get(thread_id)
     # mode=ro needs the WAL side files; when Codex is closed they may be gone,
     # so fall back to an immutable snapshot read.
     for flags in ("mode=ro", "mode=ro&immutable=1"):
@@ -258,8 +258,35 @@ def thread_name(path: Path, thread_id: str) -> str | None:
             finally:
                 connection.close()
             name = row[0].strip() if row and isinstance(row[0], str) else ""
-            return name or None
-    return None
+            return name or catalog_titles(home).get(thread_id)
+    return catalog_titles(home).get(thread_id)
+
+
+def catalog_titles(home: Path) -> dict[str, str]:
+    """Titles Codex Desktop shows in its sidebar (``sqlite/codex-dev.db`` thread catalog).
+
+    The sidebar is built from this catalog rather than ``state_<n>.sqlite``; it
+    also titles threads that never got a ``threads.name``.
+    """
+
+    database = home / "sqlite" / "codex-dev.db"
+    if not database.is_file():
+        return {}
+    for flags in ("mode=ro", "mode=ro&immutable=1"):
+        with suppress(sqlite3.Error, OSError):
+            connection = sqlite3.connect(f"{database.resolve().as_uri()}?{flags}", uri=True)
+            try:
+                rows = connection.execute(
+                    "SELECT thread_id, display_title FROM local_thread_catalog"
+                ).fetchall()
+            finally:
+                connection.close()
+            return {
+                thread_id: title.strip()
+                for thread_id, title in rows
+                if isinstance(thread_id, str) and isinstance(title, str) and title.strip()
+            }
+    return {}
 
 
 def _history_mode(records: list[Any], *, history_base_resolved: bool = False) -> str:
