@@ -11,7 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from session_migrate import __version__
-from session_migrate.bulk import bulk_codex_to_claude
+from session_migrate.bulk import bulk_codex_to_claude, register_in_claude_desktop
 from session_migrate.catalog import Catalog, CatalogEntry, default_catalog_path
 from session_migrate.conversion import (
     KILO_HOME_UNSUPPORTED,
@@ -209,6 +209,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bulk_parser.add_argument(
         "--full", action="store_true", help="print every migrated session, not only counts"
+    )
+    bulk_parser.add_argument(
+        "--register-desktop",
+        action="store_true",
+        help=(
+            "macOS: add imported sessions to Claude Desktop's session list through its "
+            "claude://resume deep link (also catches up sessions imported earlier)"
+        ),
     )
 
     catalog_parser = subparsers.add_parser(
@@ -424,6 +432,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 dry_run=args.dry_run,
             )
             result = report.to_dict(dry_run=args.dry_run)
+            if args.register_desktop and not args.dry_run:
+                ids = [item["session_id"] for item in report.migrated]
+                result["registered_in_desktop"] = len(
+                    register_in_claude_desktop([*ids, *report.already_migrated_ids])
+                )
             if not args.full:
                 result.pop("migrated")
             print(json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False))

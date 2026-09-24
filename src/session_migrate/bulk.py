@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import time
 import uuid
 from collections import Counter
 from contextlib import suppress
@@ -31,6 +34,7 @@ BULK_NAMESPACE = uuid.UUID("5f0d3a52-8c1e-4b8e-9a51-6d2b8f7e4c10")
 class BulkReport:
     scanned: int = 0
     migrated: list[dict[str, Any]] = field(default_factory=list)
+    already_migrated_ids: list[str] = field(default_factory=list)
     skipped: Counter[str] = field(default_factory=Counter)
     failed: list[dict[str, str]] = field(default_factory=list)
 
@@ -121,6 +125,7 @@ def bulk_codex_to_claude(
             output_path, manifest_path = target_import_paths(artifact, target_home)
             if output_path.exists() or manifest_path.exists():
                 report.skipped["already_migrated"] += 1
+                report.already_migrated_ids.append(artifact.session_id)
                 continue
             if not dry_run:
                 write_artifact(artifact, output_path=output_path, manifest_path=manifest_path)
@@ -182,3 +187,32 @@ def _started_on(meta: dict[str, Any]) -> date:
         return date.fromisoformat(timestamp[:10])
     except ValueError:
         return date.min
+
+
+def claude_desktop_sessions_root() -> Path:
+    return Path.home() / "Library" / "Application Support" / "Claude" / "claude-code-sessions"
+
+
+def registered_in_claude_desktop(session_id: str, root: Path | None = None) -> bool:
+    root = root or claude_desktop_sessions_root()
+    return any(root.glob(f"*/*/local_{session_id}.json"))
+
+
+def register_in_claude_desktop(session_ids: list[str], *, delay: float = 1.5) -> list[str]:
+    """Hand each Claude Code session to Claude Desktop through its resume deep link.
+
+    Desktop's ``claude://resume?session=<id>`` handler imports a CLI transcript
+    from ~/.claude/projects into its own session list. Sessions already in the
+    Desktop store are skipped. Returns the IDs that were handed over.
+    """
+
+    if sys.platform != "darwin":
+        raise SessionMigrateError("Claude Desktop registration is supported on macOS only")
+    handed: list[str] = []
+    for session_id in session_ids:
+        if registered_in_claude_desktop(session_id):
+            continue
+        subprocess.run(["open", f"claude://resume?session={session_id}"], check=True)
+        handed.append(session_id)
+        time.sleep(delay)
+    return handed

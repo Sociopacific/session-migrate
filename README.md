@@ -99,7 +99,9 @@ itself imported from another agent, and rollout files that Codex continued in a
 newer file; the newest continuation is imported with its full history. Target
 session IDs are derived from the source thread, so a second run only imports new
 threads. Add `--include-subagents`, `--include-archived`, or `--since YYYY-MM-DD`
-to change the selection. Very long threads may need higher safety limits, for
+to change the selection. On macOS, `--register-desktop` also adds the imported
+sessions to Claude Desktop's Code tab through its `claude://resume?session=<id>`
+deep link. Very long threads may need higher safety limits, for
 example `SESSION_MIGRATE_MAX_TOTAL_BYTES=2147483648 SESSION_MIGRATE_MAX_RECORDS=2000000`.
 
 ## Give it to your coding agent
