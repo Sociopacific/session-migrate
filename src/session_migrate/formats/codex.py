@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from collections import Counter, deque
 from contextlib import suppress
@@ -220,11 +221,42 @@ def parse(path: Path) -> Session:
         started_at=started_at,
         cli_version=cli_version,
         model=model,
-        title=title,
+        title=title or (thread_name(path, session_id) if session_id else None),
         events=tuple(events),
         raw_record_count=len(records),
         model_provider=model_provider,
     )
+
+
+def thread_name(path: Path, thread_id: str) -> str | None:
+    """Thread name Codex keeps only in its state database (no thread_name_updated event).
+
+    Codex Desktop names threads in ``state_<n>.sqlite`` ``threads.name``; the
+    rollout itself often carries no title record. Read-only and best effort.
+    """
+
+    home = codex_home_for_rollout(path)
+    if home is None:
+        return None
+    databases = sorted(
+        home.glob("state_*.sqlite"),
+        key=lambda candidate: (
+            int(candidate.stem.split("_")[-1]) if candidate.stem.split("_")[-1].isdigit() else -1
+        ),
+    )
+    if not databases:
+        return None
+    with suppress(sqlite3.Error, OSError):
+        connection = sqlite3.connect(f"{databases[-1].resolve().as_uri()}?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                "SELECT name FROM threads WHERE id = ?", (thread_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+        name = row[0].strip() if row and isinstance(row[0], str) else ""
+        return name or None
+    return None
 
 
 def _history_mode(records: list[Any], *, history_base_resolved: bool = False) -> str:

@@ -115,3 +115,17 @@ def test_bulk_dry_run_writes_nothing(tmp_path: Path) -> None:
 
     assert len(report.migrated) == 1
     assert not target.exists()
+
+
+def test_title_falls_back_to_codex_state_database_name(tmp_path: Path) -> None:
+    import sqlite3
+
+    home = tmp_path / "codex"
+    _, continuation = _split_thread(home, len(_records()) // 2)
+    database = sqlite3.connect(home / "state_5.sqlite")
+    database.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT)")
+    database.execute("INSERT INTO threads VALUES (?, ?)", (THREAD_ID, "Named in Codex Desktop"))
+    database.commit()
+    database.close()
+
+    assert codex.parse(continuation).title == "Named in Codex Desktop"
