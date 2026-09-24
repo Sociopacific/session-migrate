@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -27,6 +28,7 @@ from session_migrate.model import AgentFormat, TargetFormat
 
 # Stable namespace so re-running bulk maps each source thread to the same
 # target session ID and skips what was already installed.
+_TASK_KEY = re.compile(r"([A-Z][A-Z0-9]*-\d+)-")
 BULK_NAMESPACE = uuid.UUID("5f0d3a52-8c1e-4b8e-9a51-6d2b8f7e4c10")
 
 
@@ -73,6 +75,8 @@ def bulk_codex_to_claude(
     include_subagents: bool = False,
     include_archived: bool = False,
     since: date | None = None,
+    only_named: bool = False,
+    archived_task_cli_state: Path | None = None,
     dry_run: bool = False,
 ) -> BulkReport:
     report = BulkReport()
@@ -93,6 +97,9 @@ def bulk_codex_to_claude(
                 )
             )
 
+    archived_task_keys = (
+        _archived_task_cli_keys(archived_task_cli_state) if archived_task_cli_state else set()
+    )
     selected: list[_Rollout] = []
     for rollout in rollouts:
         if rollout.path in superseded:
@@ -105,6 +112,12 @@ def bulk_codex_to_claude(
             report.skipped["subagent"] += 1
         elif since is not None and _started_on(rollout.meta) < since:
             report.skipped["before_since"] += 1
+        elif archived_task_keys and _task_key_in_path(
+            str(rollout.meta.get("cwd") or ""), archived_task_keys
+        ):
+            report.skipped["archived_task_cli_environment"] += 1
+        elif only_named and not codex.thread_name(rollout.path, rollout.thread_id):
+            report.skipped["unnamed"] += 1
         else:
             selected.append(rollout)
 
@@ -149,6 +162,30 @@ def bulk_codex_to_claude(
             }
         )
     return report
+
+
+def _archived_task_cli_keys(state_path: Path) -> set[str]:
+    """Task keys whose every Task CLI environment is archived."""
+
+    try:
+        tasks = json.loads(state_path.read_text()).get("tasks", {})
+    except (OSError, ValueError, AttributeError):
+        return set()
+    archived: dict[str, bool] = {}
+    for name, task in tasks.items() if isinstance(tasks, dict) else ():
+        match = _TASK_KEY.match(name)
+        if match and isinstance(task, dict):
+            key = match.group(1)
+            archived[key] = archived.get(key, True) and bool(task.get("archived"))
+    return {key for key, is_archived in archived.items() if is_archived}
+
+
+def _task_key_in_path(cwd: str, keys: set[str]) -> bool:
+    for part in Path(cwd).parts:
+        match = _TASK_KEY.match(part)
+        if match and match.group(1) in keys:
+            return True
+    return False
 
 
 def _migrated_codex_threads(target_home: Path) -> dict[str, str]:

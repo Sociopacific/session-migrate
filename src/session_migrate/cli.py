@@ -205,6 +205,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--since", type=date.fromisoformat, help="only sessions started on or after YYYY-MM-DD"
     )
     bulk_parser.add_argument(
+        "--only-named", action="store_true", help="only threads that have a name in Codex"
+    )
+    bulk_parser.add_argument(
+        "--skip-archived-task-cli",
+        nargs="?",
+        const=Path("~/.task/state.json").expanduser(),
+        type=_expanded_path,
+        metavar="STATE_JSON",
+        help="skip threads run inside Task CLI environments that are all archived",
+    )
+    bulk_parser.add_argument(
         "--dry-run", action="store_true", help="convert and report without installing"
     )
     bulk_parser.add_argument(
@@ -429,6 +440,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 include_subagents=args.include_subagents,
                 include_archived=args.include_archived,
                 since=args.since,
+                only_named=args.only_named,
+                archived_task_cli_state=args.skip_archived_task_cli,
                 dry_run=args.dry_run,
             )
             result = report.to_dict(dry_run=args.dry_run)

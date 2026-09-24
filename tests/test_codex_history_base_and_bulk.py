@@ -129,3 +129,51 @@ def test_title_falls_back_to_codex_state_database_name(tmp_path: Path) -> None:
     database.close()
 
     assert codex.parse(continuation).title == "Named in Codex Desktop"
+
+
+def test_bulk_filters_unnamed_and_archived_task_cli_threads(tmp_path: Path) -> None:
+    import sqlite3
+
+    source = tmp_path / "codex"
+    day = source / "sessions/2026/09/11"
+    threads = {
+        "01a07899-0000-7000-8000-00000000000a": ("Named", "/work/CLOUDFRONT-1-live/app"),
+        "01a07899-0000-7000-8000-00000000000b": ("", "/work/CLOUDFRONT-2-live/app"),
+        "01a07899-0000-7000-8000-00000000000c": ("Old", "/work/CLOUDFRONT-3-gone/app"),
+    }
+    source.mkdir(parents=True)
+    database = sqlite3.connect(source / "state_5.sqlite")
+    database.execute("CREATE TABLE threads (id TEXT PRIMARY KEY, name TEXT)")
+    for index, (thread_id, (name, cwd)) in enumerate(threads.items()):
+        records = _records()
+        records[0]["payload"]["id"] = thread_id
+        records[0]["payload"]["cwd"] = cwd
+        _write(day / f"rollout-2026-09-11T00-00-0{index}-{thread_id}.jsonl", records)
+        database.execute("INSERT INTO threads VALUES (?, ?)", (thread_id, name or None))
+    database.commit()
+    database.close()
+    state = tmp_path / "task-state.json"
+    state.write_text(
+        json.dumps(
+            {
+                "tasks": {
+                    "CLOUDFRONT-1-live": {"archived": False},
+                    "CLOUDFRONT-3-gone": {"archived": True},
+                    "CLOUDFRONT-3-renamed": {"archived": True},
+                }
+            }
+        )
+    )
+
+    report = bulk_codex_to_claude(
+        source_home=source,
+        target_home=tmp_path / "claude",
+        only_named=True,
+        archived_task_cli_state=state,
+        dry_run=True,
+    )
+
+    assert [item["source_id"] for item in report.migrated] == [
+        "01a07899-0000-7000-8000-00000000000a"
+    ]
+    assert report.skipped == {"unnamed": 1, "archived_task_cli_environment": 1}

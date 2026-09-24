@@ -246,16 +246,19 @@ def thread_name(path: Path, thread_id: str) -> str | None:
     )
     if not databases:
         return None
-    with suppress(sqlite3.Error, OSError):
-        connection = sqlite3.connect(f"{databases[-1].resolve().as_uri()}?mode=ro", uri=True)
-        try:
-            row = connection.execute(
-                "SELECT name FROM threads WHERE id = ?", (thread_id,)
-            ).fetchone()
-        finally:
-            connection.close()
-        name = row[0].strip() if row and isinstance(row[0], str) else ""
-        return name or None
+    # mode=ro needs the WAL side files; when Codex is closed they may be gone,
+    # so fall back to an immutable snapshot read.
+    for flags in ("mode=ro", "mode=ro&immutable=1"):
+        with suppress(sqlite3.Error, OSError):
+            connection = sqlite3.connect(f"{databases[-1].resolve().as_uri()}?{flags}", uri=True)
+            try:
+                row = connection.execute(
+                    "SELECT name FROM threads WHERE id = ?", (thread_id,)
+                ).fetchone()
+            finally:
+                connection.close()
+            name = row[0].strip() if row and isinstance(row[0], str) else ""
+            return name or None
     return None
 
 
