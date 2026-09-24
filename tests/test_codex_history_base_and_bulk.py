@@ -250,7 +250,11 @@ def test_encrypted_compaction_becomes_claude_boundary_with_kept_messages(tmp_pat
         if record["type"] == "compacted":
             record["payload"]["message"] = ""
             record["payload"]["replacement_history"] = [
-                {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Keep BETA-2048"}]},
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Keep BETA-2048"}],
+                },
                 {"type": "compaction", "encrypted_content": "opaque"},
             ]
     path = _write(tmp_path / "codex/sessions/2026/09/12/rollout-encrypted.jsonl", records)
