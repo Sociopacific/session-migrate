@@ -100,13 +100,17 @@ def bulk_codex_to_claude(
     archived_task_keys = (
         _archived_task_cli_keys(archived_task_cli_state) if archived_task_cli_state else set()
     )
+    external_sources = _external_import_sources(source_home)
     selected: list[_Rollout] = []
     for rollout in rollouts:
         if rollout.path in superseded:
             report.skipped["continued_in_newer_rollout"] += 1
-        elif rollout.external_import:
+        elif rollout.external_import and not _import_diverged(
+            rollout, external_sources.get(rollout.thread_id)
+        ):
             # Codex's own import of another agent's session (for example
-            # Claude Code); the original still exists at its source.
+            # Claude Code) that was never continued in Codex; the original
+            # still exists at its source.
             report.skipped["imported_into_codex_from_other_agent"] += 1
         elif not include_subagents and _is_subagent(rollout.meta):
             report.skipped["subagent"] += 1
@@ -225,6 +229,38 @@ def _scan_rollouts(home: Path, *, include_archived: bool) -> list[_Rollout]:
             _Rollout(path=path.resolve(), meta=payload, external_import=_is_external_import(second))
         )
     return rollouts
+
+
+def _external_import_sources(home: Path) -> dict[str, Path]:
+    """Codex thread ID -> source transcript it was imported from (Codex /import log)."""
+
+    try:
+        records = json.loads((home / "external_agent_session_imports.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    sources: dict[str, Path] = {}
+    for record in records.get("records", []) if isinstance(records, dict) else []:
+        if not isinstance(record, dict):
+            continue
+        thread_id, source = record.get("imported_thread_id"), record.get("source_path")
+        if isinstance(thread_id, str) and isinstance(source, str):
+            sources[thread_id] = Path(source)
+    return sources
+
+
+def _import_diverged(rollout: _Rollout, source: Path | None) -> bool:
+    """True when an imported thread holds work its source does not have."""
+
+    if source is not None and not source.exists():
+        return True
+    try:
+        with rollout.path.open("rb") as stream:
+            for line in stream:
+                if b'"task_started"' in line and b"external-import-" not in line:
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def _is_external_import(record: Any) -> bool:
